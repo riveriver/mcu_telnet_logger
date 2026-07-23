@@ -1,0 +1,14 @@
+{
+  "host": "192.168.101.32",
+  "port": 23,
+  "output_file": "logs/mcu_telnet_log.txt",
+  "append": true,
+  "connect_timeout_seconds": 10,
+  "read_timeout_seconds": 1,
+  "reconnect_interval_seconds": 5,
+  "encoding": "utf-8",
+  "strip_ansi": true,
+  "line_timestamp": false,
+  "send_initial_newline": true,
+  "interactive": true
+}
