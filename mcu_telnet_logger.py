@@ -25,6 +25,7 @@ SB = 250
 SE = 240
 
 ANSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+TIME_RESPONSE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\b")
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ class MonitorConfig:
     line_timestamp: bool
     send_initial_newline: bool
     interactive: bool
+    probe_interval_seconds: float
+    probe_response_timeout_seconds: float
+    probe_command: str
 
 
 class TelnetFilter:
@@ -217,6 +221,9 @@ def load_config(path: Path) -> MonitorConfig:
         line_timestamp=bool(raw.get("line_timestamp", False)),
         send_initial_newline=bool(raw.get("send_initial_newline", True)),
         interactive=bool(raw.get("interactive", True)),
+        probe_interval_seconds=float(raw.get("probe_interval_seconds", 1800)),
+        probe_response_timeout_seconds=float(raw.get("probe_response_timeout_seconds", 10)),
+        probe_command=str(raw.get("probe_command", "date get")),
     )
 
 
@@ -238,14 +245,34 @@ def stdin_sender(config: MonitorConfig, active: ActiveConnection) -> None:
             print("Not connected. Command was not sent.")
 
 
-def monitor_once(config: MonitorConfig, writer: LineTimestampWriter, active: ActiveConnection) -> None:
+def receive_probe_response(
+    buffer: str,
+    text: str,
+    response_pattern: re.Pattern[str],
+) -> tuple[str, bool]:
+    buffer = (buffer + text)[-512:]
+    return buffer, bool(response_pattern.search(buffer))
+
+
+def send_probe_command(config: MonitorConfig, active: ActiveConnection, reason: str) -> None:
+    print(f"{reason}，发送 {config.probe_command} 指令")
+    if not active.send_line(config.probe_command, config.encoding):
+        raise ConnectionError(f"failed to send probe command '{config.probe_command}'")
+
+
+def monitor_once(
+    config: MonitorConfig,
+    writer: LineTimestampWriter,
+    active: ActiveConnection,
+    connection_reason: str,
+) -> None:
     address = (config.host, config.port)
     with socket.create_connection(address, timeout=config.connect_timeout_seconds) as sock:
         configure_socket_keepalive(sock)
         sock.settimeout(config.read_timeout_seconds)
         active.set(sock)
         telnet_filter = TelnetFilter(sock)
-        print(f"Connected to {config.host}:{config.port}")
+        print(f"{connection_reason}：{config.host}:{config.port}")
         if config.interactive:
             print("Type shell commands here and press Enter to send them to the MCU.")
 
@@ -256,10 +283,30 @@ def monitor_once(config: MonitorConfig, writer: LineTimestampWriter, active: Act
                 active.mark_lost()
                 raise ConnectionError("failed to send initial newline") from error
 
+        next_probe_at = time.monotonic()
+        probe_deadline: float | None = None
+        probe_response_buffer = ""
+        probe_count = 0
+
         try:
             while not active.stop_requested.is_set():
                 if active.connection_lost.is_set():
                     raise ConnectionError("connection lost while sending data")
+
+                now = time.monotonic()
+                if probe_deadline is not None and now >= probe_deadline:
+                    raise ConnectionError(f"probe timeout waiting for '{config.probe_command}' response")
+
+                if probe_deadline is None and now >= next_probe_at:
+                    if probe_count == 0:
+                        probe_reason = "00:00 半小时主动存活探测"
+                    else:
+                        probe_reason = "半小时主动存活探测"
+
+                    send_probe_command(config, active, probe_reason)
+                    probe_count += 1
+                    probe_deadline = now + config.probe_response_timeout_seconds
+                    next_probe_at = now + config.probe_interval_seconds
 
                 try:
                     chunk = sock.recv(4096)
@@ -275,6 +322,16 @@ def monitor_once(config: MonitorConfig, writer: LineTimestampWriter, active: Act
                     sys.stdout.write(text)
                     sys.stdout.flush()
                     writer.write(text)
+
+                    if probe_deadline is not None:
+                        probe_response_buffer, probe_seen = receive_probe_response(
+                            probe_response_buffer,
+                            text,
+                            TIME_RESPONSE_RE,
+                        )
+                        if probe_seen:
+                            probe_deadline = None
+                            probe_response_buffer = ""
         finally:
             active.clear(sock)
 
@@ -285,6 +342,7 @@ def run_forever(config: MonitorConfig) -> None:
 
     print(f"Saving Telnet log to {config.output_file}")
     active = ActiveConnection()
+    first_connection = True
     if config.interactive:
         thread = threading.Thread(target=stdin_sender, args=(config, active), daemon=True)
         thread.start()
@@ -293,7 +351,9 @@ def run_forever(config: MonitorConfig) -> None:
         writer = LineTimestampWriter(file_obj, config.line_timestamp)
         while not active.stop_requested.is_set():
             try:
-                monitor_once(config, writer, active)
+                connection_reason = "首次连接成功" if first_connection else "重连成功"
+                monitor_once(config, writer, active, connection_reason)
+                first_connection = False
             except KeyboardInterrupt:
                 active.stop_requested.set()
                 print("\nStopped.")
