@@ -10,6 +10,10 @@ import socket
 import sys
 import threading
 import time
+try:
+    import readline  # optional: provides line editing and history (up/down keys)
+except Exception:
+    readline = None
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -239,9 +243,12 @@ def decode_log_bytes(data: bytes, config: MonitorConfig) -> str:
 
 
 def stdin_sender(config: MonitorConfig, active: ActiveConnection) -> None:
+    # Use input() so that if the readline module is available
+    # the user can use line editing and history (Up/Down keys).
     while not active.stop_requested.is_set():
-        line = sys.stdin.readline()
-        if line == "":
+        try:
+            line = input()
+        except EOFError:
             active.stop_requested.set()
             return
 
@@ -323,8 +330,31 @@ def monitor_once(
                 payload = telnet_filter.feed(chunk)
                 if payload:
                     text = decode_log_bytes(payload, config)
-                    sys.stdout.write(text)
-                    sys.stdout.flush()
+                    # If readline is available, preserve the current input line
+                    # so incoming log output doesn't corrupt what the user is typing.
+                    if readline is not None:
+                        try:
+                            saved = readline.get_line_buffer()
+                            # Carriage return to the line start, print incoming text,
+                            # then reprint the saved input buffer and let readline
+                            # redraw it.
+                            sys.stdout.write("\r")
+                            sys.stdout.write(text)
+                            # Ensure we end on a fresh line before reprinting buffer
+                            if not text.endswith("\n"):
+                                sys.stdout.write("\n")
+                            sys.stdout.write(saved)
+                            sys.stdout.flush()
+                            try:
+                                readline.redisplay()
+                            except Exception:
+                                pass
+                        except Exception:
+                            sys.stdout.write(text)
+                            sys.stdout.flush()
+                    else:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
                     writer.write(text)
 
                     if probe_deadline is not None:
