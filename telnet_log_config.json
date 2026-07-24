@@ -10,6 +10,8 @@
   "strip_ansi": true,
   "line_timestamp": false,
   "send_initial_newline": true,
-  "interactive": true
-  ,"probe_command": "date get"
+  "interactive": true,
+  "probe_interval_seconds": 1800,
+  "probe_response_timeout_seconds": 10,
+  "probe_command": "date get"
 }
