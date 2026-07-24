@@ -102,7 +102,6 @@ class TelnetFilter:
         except OSError:
             pass
 
-
 class LineTimestampWriter:
     def __init__(self, file_obj: Any, enabled: bool) -> None:
         self.file_obj = file_obj
@@ -134,18 +133,23 @@ class ActiveConnection:
         self._sock: socket.socket | None = None
         self._lock = threading.Lock()
         self._connected = threading.Event()
+        self.connection_lost = threading.Event()
         self.stop_requested = threading.Event()
 
     def set(self, sock: socket.socket) -> None:
         with self._lock:
             self._sock = sock
             self._connected.set()
+            self.connection_lost.clear()
 
     def clear(self, sock: socket.socket) -> None:
         with self._lock:
             if self._sock is sock:
                 self._sock = None
                 self._connected.clear()
+
+    def mark_lost(self) -> None:
+        self.connection_lost.set()
 
     def send_line(self, line: str, encoding: str) -> bool:
         if not self._connected.wait(timeout=0.1):
@@ -166,7 +170,30 @@ class ActiveConnection:
                 return True
             except OSError:
                 self._connected.clear()
+                self.connection_lost.set()
                 return False
+
+
+def configure_socket_keepalive(sock: socket.socket) -> None:
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
+
+    keepalive_options = (
+        (getattr(socket, "TCP_KEEPIDLE", None), 10),
+        (getattr(socket, "TCP_KEEPINTVL", None), 3),
+        (getattr(socket, "TCP_KEEPCNT", None), 3),
+    )
+
+    for option, value in keepalive_options:
+        if option is None:
+            continue
+
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, option, value)
+        except OSError:
+            continue
 
 
 def load_config(path: Path) -> MonitorConfig:
@@ -214,6 +241,7 @@ def stdin_sender(config: MonitorConfig, active: ActiveConnection) -> None:
 def monitor_once(config: MonitorConfig, writer: LineTimestampWriter, active: ActiveConnection) -> None:
     address = (config.host, config.port)
     with socket.create_connection(address, timeout=config.connect_timeout_seconds) as sock:
+        configure_socket_keepalive(sock)
         sock.settimeout(config.read_timeout_seconds)
         active.set(sock)
         telnet_filter = TelnetFilter(sock)
@@ -222,10 +250,17 @@ def monitor_once(config: MonitorConfig, writer: LineTimestampWriter, active: Act
             print("Type shell commands here and press Enter to send them to the MCU.")
 
         if config.send_initial_newline:
-            sock.sendall(b"\r\n")
+            try:
+                sock.sendall(b"\r\n")
+            except OSError as error:
+                active.mark_lost()
+                raise ConnectionError("failed to send initial newline") from error
 
         try:
             while not active.stop_requested.is_set():
+                if active.connection_lost.is_set():
+                    raise ConnectionError("connection lost while sending data")
+
                 try:
                     chunk = sock.recv(4096)
                 except socket.timeout:
