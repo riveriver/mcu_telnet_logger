@@ -9,7 +9,7 @@
 3. 连接成功后，日志会实时显示在终端，并写入 `logs/mcu_telnet_log.txt`。
 4. 需要交互输入时，直接在终端输入 Zephyr Shell 命令并回车。
 
-脚本会在连接成功后主动探活一次，之后每隔半小时继续探活；断线后会自动重连。
+脚本会在连接成功后主动探活一次，之后每隔半小时继续探活；断线后会按指数退避自动重连，初始等待 10 秒，倍率默认 3，最大等待 30 分钟。
 
 该工具只依赖 Python 标准库，不需要安装额外依赖。
 
@@ -37,7 +37,9 @@ mcu_telnet_logger/
   "append": true,
   "connect_timeout_seconds": 10,
   "read_timeout_seconds": 1,
-  "reconnect_interval_seconds": 5,
+  "reconnect_interval_seconds": 10,
+  "reconnect_max_interval_seconds": 1800,
+  "reconnect_backoff_multiplier": 3,
   "encoding": "utf-8",
   "strip_ansi": true,
   "line_timestamp": false,
@@ -57,7 +59,9 @@ mcu_telnet_logger/
 | `port` | Telnet 端口，Zephyr Shell 默认通常是 `23` |
 | `output_file` | 日志 txt 保存路径，相对于配置文件所在目录 |
 | `append` | `true` 表示追加写入，`false` 表示每次启动覆盖 |
-| `reconnect_interval_seconds` | 断线后的重连间隔 |
+| `reconnect_interval_seconds` | 断线后第一次重连等待时间，默认 10 秒 |
+| `reconnect_backoff_multiplier` | 每次重连等待时间的倍率，默认 3 |
+| `reconnect_max_interval_seconds` | 重连等待时间上限，默认 1800 秒，也就是 30 分钟 |
 | `strip_ansi` | 是否移除终端颜色控制字符 |
 | `line_timestamp` | 是否给保存到文件的每行日志加 PC 本地时间戳 |
 | `interactive` | 是否允许在终端输入命令并发送到 MCU |
@@ -100,6 +104,20 @@ ota show
 按 Enter 后命令会发送给 MCU。
 
 主动探活使用的是 `date get`，期望 MCU 返回类似 `2026-07-24 01:28:59 UTC` 这样的时间字符串。
+
+重连时间表是指数退避，初始等待 10 秒，倍率 3，最大等待 1800 秒。完整时间表如下：
+
+| 重连次数 | 等待时间 | 累计等待时间 |
+| --- | ---: | ---: |
+| 第 1 次 | 10 秒 | 10 秒 |
+| 第 2 次 | 30 秒 | 40 秒 |
+| 第 3 次 | 90 秒 | 130 秒 |
+| 第 4 次 | 270 秒 | 400 秒 |
+| 第 5 次 | 810 秒 | 1210 秒 |
+| 第 6 次 | 1800 秒 | 3010 秒 |
+| 第 7 次及以后 | 1800 秒 | 每次再增加 1800 秒 |
+
+也就是说，如果一直连不上，脚本会先按 10、30、90、270、810 秒重试，然后固定每 30 分钟尝试一次。
 
 ## 停止
 

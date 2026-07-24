@@ -37,6 +37,8 @@ class MonitorConfig:
     connect_timeout_seconds: float
     read_timeout_seconds: float
     reconnect_interval_seconds: float
+    reconnect_max_interval_seconds: float
+    reconnect_backoff_multiplier: float
     encoding: str
     strip_ansi: bool
     line_timestamp: bool
@@ -216,6 +218,8 @@ def load_config(path: Path) -> MonitorConfig:
         connect_timeout_seconds=float(raw.get("connect_timeout_seconds", 10)),
         read_timeout_seconds=float(raw.get("read_timeout_seconds", 1)),
         reconnect_interval_seconds=float(raw.get("reconnect_interval_seconds", 5)),
+        reconnect_max_interval_seconds=float(raw.get("reconnect_max_interval_seconds", 1800)),
+        reconnect_backoff_multiplier=float(raw.get("reconnect_backoff_multiplier", 3)),
         encoding=str(raw.get("encoding", "utf-8")),
         strip_ansi=bool(raw.get("strip_ansi", True)),
         line_timestamp=bool(raw.get("line_timestamp", False)),
@@ -349,11 +353,13 @@ def run_forever(config: MonitorConfig) -> None:
 
     with config.output_file.open(mode, encoding=config.encoding, errors="replace", buffering=1) as file_obj:
         writer = LineTimestampWriter(file_obj, config.line_timestamp)
+        reconnect_delay = config.reconnect_interval_seconds
         while not active.stop_requested.is_set():
             try:
                 connection_reason = "首次连接成功" if first_connection else "重连成功"
                 monitor_once(config, writer, active, connection_reason)
                 first_connection = False
+                reconnect_delay = config.reconnect_interval_seconds
             except KeyboardInterrupt:
                 active.stop_requested.set()
                 print("\nStopped.")
@@ -366,8 +372,12 @@ def run_forever(config: MonitorConfig) -> None:
             if active.stop_requested.is_set():
                 break
 
-            print(f"Reconnecting in {config.reconnect_interval_seconds:g} seconds...")
-            time.sleep(config.reconnect_interval_seconds)
+            print(f"Reconnecting in {reconnect_delay:g} seconds...")
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(
+                reconnect_delay * config.reconnect_backoff_multiplier,
+                config.reconnect_max_interval_seconds,
+            )
 
 
 def parse_args() -> argparse.Namespace:
