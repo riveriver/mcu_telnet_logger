@@ -1,11 +1,13 @@
 # MCU Telnet Logger
 
-`mcu_telnet_logger` 是一个用于持续监听 MCU Telnet Shell 输出的 Python 工具。
+`mcu_telnet_logger` 是一个用于持续监听 MCU Telnet Shell 输出并采集 BMS
+数据的 Python 工具。默认每 10 秒发送一次 `bms sample`。
 
 它会把收到的日志同时：
 
 - 打印到当前终端
-- 保存到本地 txt 文件
+- 将包含收发方向和主机时间戳的原始数据保存到 TXT 文件
+- 将完整的 `bms sample` 响应转换成一行精简 CSV
 - 支持在终端输入 Zephyr Shell 命令并转发给 MCU
 - 断线后自动重连
 
@@ -29,18 +31,20 @@ mcu_telnet_logger/
 
 ```json
 {
-  "host": "192.168.101.32",
+  "host": "192.168.46.36",
   "port": 23,
-  "output_file": "logs/mcu_telnet_log.txt",
-  "append": true,
+  "raw_output_file": "logs/bms_raw.txt",
+  "csv_output_file": "logs/bms_samples.csv",
+  "append": false,
   "connect_timeout_seconds": 10,
   "read_timeout_seconds": 1,
   "reconnect_interval_seconds": 5,
   "encoding": "utf-8",
   "strip_ansi": true,
-  "line_timestamp": false,
   "send_initial_newline": true,
-  "interactive": true
+  "interactive": true,
+  "bms_sample_interval_seconds": 10,
+  "bms_response_timeout_seconds": 2
 }
 ```
 
@@ -50,12 +54,14 @@ mcu_telnet_logger/
 | --- | --- |
 | `host` | MCU 的 IPv4 地址或主机名 |
 | `port` | Telnet 端口，Zephyr Shell 默认通常是 `23` |
-| `output_file` | 日志 txt 保存路径，相对于配置文件所在目录 |
+| `raw_output_file` | 原始 Telnet 收发记录路径，相对于配置文件所在目录 |
+| `csv_output_file` | BMS 结构化 CSV 路径，相对于配置文件所在目录 |
 | `append` | `true` 表示追加写入，`false` 表示每次启动覆盖 |
 | `reconnect_interval_seconds` | 断线后的重连间隔 |
 | `strip_ansi` | 是否移除终端颜色控制字符 |
-| `line_timestamp` | 是否给保存到文件的每行日志加 PC 本地时间戳 |
 | `interactive` | 是否允许在终端输入命令并发送到 MCU |
+| `bms_sample_interval_seconds` | 自动发送 `bms sample` 的周期，现场默认 10 秒 |
+| `bms_response_timeout_seconds` | 等待一组完整 BMS 响应的超时时间 |
 
 ## 运行
 
@@ -74,8 +80,21 @@ python C:\path\to\mcu_telnet_logger.py -c C:\path\to\telnet_log_config.json
 连接成功后，MCU 输出会实时显示在终端，并写入：
 
 ```text
-logs/mcu_telnet_log.txt
+logs/bms_raw.txt
+logs/bms_samples.csv
 ```
+
+原始文件保留 MCU 返回的所有内容，并使用 `[TX]`、`[RX]` 标记方向。CSV
+使用以下精简列：
+
+```csv
+seq,time,online,valid,soc,voltage_v,current_a,direction,capacity_mah,temp_c,status,raw_status,ok
+1,2026-11-26T14:30:00.123+08:00,1,0x0000003f,85.0,51.620,1.240,charge,28000,25.300,1,0x00000001,1
+```
+
+`ok=1` 表示十个 `bms sample` 字段全部收到；超时或响应不完整时为
+`ok=0`，缺失值留空。YT46 的电流是幅值，充放电方向根据 `status` 转换为
+`idle`、`charge`、`discharge` 或 `unknown`。
 
 ## 交互命令
 

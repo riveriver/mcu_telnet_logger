@@ -1,14 +1,16 @@
 {
-  "host": "192.168.101.32",
+  "host": "192.168.46.36",
   "port": 23,
-  "output_file": "logs/mcu_telnet_log.txt",
-  "append": true,
+  "raw_output_file": "logs/bms_raw.txt",
+  "csv_output_file": "logs/bms_samples.csv",
+  "append": false,
   "connect_timeout_seconds": 10,
   "read_timeout_seconds": 1,
   "reconnect_interval_seconds": 5,
   "encoding": "utf-8",
   "strip_ansi": true,
-  "line_timestamp": false,
   "send_initial_newline": true,
-  "interactive": true
+  "interactive": true,
+  "bms_sample_interval_seconds": 10,
+  "bms_response_timeout_seconds": 2
 }
